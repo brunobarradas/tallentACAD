@@ -3,7 +3,7 @@ import Stripe from 'stripe'
 import { createAdminClient } from '@/lib/supabase'
 import { addExtraCapacity } from '@/lib/limits'
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2024-04-10' })
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2024-04-10' as any })
 
 export async function POST(request: NextRequest) {
   const body = await request.text()
@@ -18,14 +18,14 @@ export async function POST(request: NextRequest) {
   }
 
   if (event.type === 'checkout.session.completed') {
-    const session = event.data.object as Stripe.CheckoutSession
-    const { tenant_id, type, courses_added, students_added } = session.metadata || {}
+    const session = event.data.object as Record<string, any>
+    const metadata = session.metadata || {}
+    const { tenant_id, type, courses_added, students_added } = metadata
 
     if (!tenant_id) return NextResponse.json({ received: true })
 
     const supabase = createAdminClient()
 
-    // Registar pagamento
     await supabase.from('plans').insert({
       tenant_id,
       stripe_payment_id: session.payment_intent as string,
@@ -36,9 +36,7 @@ export async function POST(request: NextRequest) {
       paid_at: new Date().toISOString()
     })
 
-    // Atualizar limites conforme tipo de pagamento
     if (type === 'base_plan') {
-      // Plano base — definir limites (ou repor se ja existia)
       const { data: existing } = await supabase
         .from('plan_limits')
         .select('id, max_courses, max_enrollments')
@@ -67,7 +65,6 @@ export async function POST(request: NextRequest) {
       await addExtraCapacity(tenant_id, 'enrollment', parseInt(students_added || '1'))
     }
 
-    // Ativar tenant apos pagamento
     await supabase
       .from('tenants')
       .update({ status: 'active' })
