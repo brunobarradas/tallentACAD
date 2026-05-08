@@ -1,46 +1,82 @@
-export default function FormandosPage() {
-  const formandos = [
-    { nome: 'Ana Silva', email: 'ana@empresa.pt', curso: 'Excel Avancado', progresso: '65%', inscrito: '01/05/2026', expira: '30/07/2026', estado: 'Ativo' },
-    { nome: 'Joao Costa', email: 'joao@empresa.pt', curso: 'Power BI', progresso: '30%', inscrito: '15/05/2026', expira: '14/07/2026', estado: 'Ativo' },
-    { nome: 'Maria Santos', email: 'maria@empresa.pt', curso: 'Excel Avancado', progresso: '100%', inscrito: '01/05/2026', expira: '30/07/2026', estado: 'Concluido' },
-    { nome: 'Pedro Lopes', email: 'pedro@empresa.pt', curso: 'Lideranca', progresso: '0%', inscrito: '01/06/2026', expira: '29/09/2026', estado: 'Nao iniciado' },
-  ]
+import { createServerSupabaseClient } from '@/lib/supabase'
 
-  const badgeColor: Record<string, string> = { Ativo: '#dcfce7', Concluido: '#dbeafe', 'Nao iniciado': '#fef3c7' }
-  const badgeText: Record<string, string> = { Ativo: '#16a34a', Concluido: '#1d4ed8', 'Nao iniciado': '#d97706' }
+export default async function FormandosPage() {
+  const supabase = await createServerSupabaseClient()
+
+  const { data: enrollments } = await supabase
+    .from('enrollments')
+    .select(`
+      id, enrolled_at, expires_at, status,
+      tenant_users (name, email),
+      courses (title)
+    `)
+    .order('enrolled_at', { ascending: false })
+
+  const { data: completions } = await supabase
+    .from('lesson_access')
+    .select('enrollment_id, is_completed')
+
+  const progressByEnrollment = (completions || []).reduce((acc: Record<string, { total: number, done: number }>, la: any) => {
+    if (!acc[la.enrollment_id]) acc[la.enrollment_id] = { total: 0, done: 0 }
+    acc[la.enrollment_id].total++
+    if (la.is_completed) acc[la.enrollment_id].done++
+    return acc
+  }, {})
+
+  const badgeColor: Record<string, string> = {
+    active: '#dcfce7', expired: '#fef3c7', cancelled: '#fee2e2',
+  }
+  const badgeText: Record<string, string> = {
+    active: '#16a34a', expired: '#d97706', cancelled: '#dc2626',
+  }
+  const badgeLabel: Record<string, string> = {
+    active: 'Ativo', expired: 'Expirado', cancelled: 'Cancelado',
+  }
 
   return (
     <div>
       <div style={{ background: '#fff', padding: '16px 28px', borderBottom: '1px solid #e8edf3', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ fontSize: 18, fontWeight: 700, color: '#1e3a5f' }}>Gestao de Formandos</div>
-        <a href="#" style={{ padding: '8px 16px', background: '#f5a623', color: '#fff', borderRadius: 8, fontSize: 12, fontWeight: 600, textDecoration: 'none' }}>
-          + Convidar Formando
-        </a>
       </div>
+
       <div style={{ padding: '24px 28px' }}>
         <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #e8edf3' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr>
-                {['Nome', 'Email', 'Curso', 'Progresso', 'Inscrito', 'Expira', 'Estado'].map(h => (
-                  <th key={h} style={{ textAlign: 'left', fontSize: 10, letterSpacing: 1, textTransform: 'uppercase', color: '#6b7280', padding: '12px 20px', borderBottom: '1px solid #e8edf3' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {formandos.map((f, i) => (
-                <tr key={i} style={{ borderBottom: '1px solid #f9fafb' }}>
-                  <td style={{ padding: '12px 20px', fontSize: 13, fontWeight: 600, color: '#1e3a5f' }}>{f.nome}</td>
-                  <td style={{ fontSize: 12, color: '#6b7280' }}>{f.email}</td>
-                  <td style={{ fontSize: 12 }}>{f.curso}</td>
-                  <td style={{ fontSize: 12, fontWeight: 600, color: f.progresso === '100%' ? '#16a34a' : '#374151' }}>{f.progresso}</td>
-                  <td style={{ fontSize: 12 }}>{f.inscrito}</td>
-                  <td style={{ fontSize: 12 }}>{f.expira}</td>
-                  <td><span style={{ padding: '3px 10px', borderRadius: 20, fontSize: 10, fontWeight: 600, background: badgeColor[f.estado], color: badgeText[f.estado] }}>{f.estado}</span></td>
+          {enrollments && enrollments.length > 0 ? (
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>
+                  {['Formando', 'Email', 'Curso', 'Progresso', 'Inscrito', 'Expira', 'Estado'].map(h => (
+                    <th key={h} style={{ textAlign: 'left', fontSize: 10, letterSpacing: 1, textTransform: 'uppercase', color: '#6b7280', padding: '12px 20px', borderBottom: '1px solid #e8edf3' }}>{h}</th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {enrollments.map((e: any, i: number) => {
+                  const prog = progressByEnrollment[e.id]
+                  const pct = prog && prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : 0
+                  return (
+                    <tr key={i} style={{ borderBottom: '1px solid #f9fafb' }}>
+                      <td style={{ padding: '12px 20px', fontSize: 13, fontWeight: 600, color: '#1e3a5f' }}>{e.tenant_users?.name || '-'}</td>
+                      <td style={{ fontSize: 12, color: '#6b7280' }}>{e.tenant_users?.email || '-'}</td>
+                      <td style={{ fontSize: 12 }}>{e.courses?.title || '-'}</td>
+                      <td style={{ fontSize: 12, fontWeight: 600, color: pct === 100 ? '#16a34a' : '#374151' }}>{pct}%</td>
+                      <td style={{ fontSize: 12 }}>{new Date(e.enrolled_at).toLocaleDateString('pt-PT')}</td>
+                      <td style={{ fontSize: 12 }}>{new Date(e.expires_at).toLocaleDateString('pt-PT')}</td>
+                      <td>
+                        <span style={{ padding: '3px 10px', borderRadius: 20, fontSize: 10, fontWeight: 600, background: badgeColor[e.status] || '#f3f4f6', color: badgeText[e.status] || '#6b7280' }}>
+                          {badgeLabel[e.status] || e.status}
+                        </span>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          ) : (
+            <div style={{ padding: 40, textAlign: 'center', color: '#6b7280', fontSize: 13 }}>
+              Nenhum formando inscrito ainda.
+            </div>
+          )}
         </div>
       </div>
     </div>
