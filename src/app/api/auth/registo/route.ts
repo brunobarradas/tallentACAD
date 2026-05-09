@@ -1,31 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase'
+import Stripe from 'stripe'
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2024-04-10' as any })
 
 export async function POST(request: NextRequest) {
   try {
-    const { nome, slug, email, password, nif, telefone } = await request.json()
+    const { nome, email, password, curso_slug } = await request.json()
 
-    if (!nome || !slug || !email || !password) {
+    if (!nome || !email || !password) {
       return NextResponse.json({ error: 'Campos obrigatorios em falta' }, { status: 400 })
     }
 
-    // Validar slug
-    if (!/^[a-z0-9]+$/.test(slug)) {
-      return NextResponse.json({ error: 'O identificador so pode conter letras minusculas e numeros' }, { status: 400 })
-    }
-
     const supabase = createAdminClient()
-
-    // Verificar se slug ja existe
-    const { data: existing } = await supabase
-      .from('tenants')
-      .select('id')
-      .eq('slug', slug)
-      .single()
-
-    if (existing) {
-      return NextResponse.json({ error: 'Este identificador ja esta em uso. Escolha outro.' }, { status: 409 })
-    }
 
     // Criar utilizador no Supabase Auth
     const { data: authData, error: authError } = await supabase.auth.admin.createUser({
@@ -34,57 +21,81 @@ export async function POST(request: NextRequest) {
       email_confirm: true,
     })
 
-    if (authError || !authData.user) {
-      if (authError?.message?.includes('already registered')) {
+    if (authError) {
+      if (authError.message?.includes('already registered')) {
         return NextResponse.json({ error: 'Este email ja esta registado.' }, { status: 409 })
       }
-      return NextResponse.json({ error: authError?.message || 'Erro ao criar utilizador' }, { status: 500 })
+      return NextResponse.json({ error: authError.message }, { status: 500 })
     }
 
-    // Calcular fim do trial (15 dias)
-    const trialEndsAt = new Date()
-    trialEndsAt.setDate(trialEndsAt.getDate() + 15)
-
-    // Criar tenant
-    const { data: tenant, error: tenantError } = await supabase
-      .from('tenants')
+    // Criar user na tabela users
+    const { data: user, error: userError } = await supabase
+      .from('users')
       .insert({
-        slug,
-        name: nome,
+        auth_user_id: authData.user!.id,
         email,
-        status: 'trial',
-        is_owner: false,
-        trial_ends_at: trialEndsAt.toISOString(),
+        name: nome,
+        role: 'student',
+        status: 'active',
       })
       .select()
       .single()
 
-    if (tenantError || !tenant) {
-      // Reverter criacao do utilizador
-      await supabase.auth.admin.deleteUser(authData.user.id)
-      return NextResponse.json({ error: 'Erro ao criar entidade' }, { status: 500 })
+    if (userError || !user) {
+      await supabase.auth.admin.deleteUser(authData.user!.id)
+      return NextResponse.json({ error: 'Erro ao criar utilizador' }, { status: 500 })
     }
 
-    // Criar limites do plano
-    await supabase.from('plan_limits').insert({
-      tenant_id: tenant.id,
-      max_courses: 5,
-      max_enrollments: 100,
-      current_courses: 0,
-      current_enrollments: 0,
-    })
+    // Se veio de um curso especifico
+    if (curso_slug) {
+      const { data: course } = await supabase
+        .from('courses')
+        .select('id, title, type, price, access_days')
+        .eq('slug', curso_slug)
+        .eq('status', 'published')
+        .single()
 
-    // Criar utilizador admin da entidade
-    await supabase.from('tenant_users').insert({
-      tenant_id: tenant.id,
-      auth_user_id: authData.user.id,
-      email,
-      name: nome,
-      role: 'admin',
-      status: 'active',
-    })
+      if (course) {
+        // Curso pago — redirecionar para pagamento
+        if (course.type === 'paid' && course.price > 0) {
+          const session = await stripe.checkout.sessions.create({
+            payment_method_types: ['card'],
+            line_items: [{
+              price_data: {
+                currency: 'eur',
+                product_data: { name: `Curso: ${course.title}` },
+                unit_amount: Math.round(course.price * 100),
+              },
+              quantity: 1,
+            }],
+            mode: 'payment',
+            customer_email: email,
+            metadata: {
+              type: 'student_enrollment',
+              course_id: course.id,
+              user_id: user.id,
+            },
+            success_url: `${process.env.NEXT_PUBLIC_APP_URL}/area?enrolled=true`,
+            cancel_url: `${process.env.NEXT_PUBLIC_APP_URL}/curso/${curso_slug}`,
+          })
 
-    // Enviar email de boas vindas via Resend
+          return NextResponse.json({ payment_url: session.url })
+        }
+
+        // Curso gratuito — inscrever diretamente
+        const expiresAt = new Date()
+        expiresAt.setDate(expiresAt.getDate() + (course.access_days || 90))
+
+        await supabase.from('enrollments').insert({
+          course_id: course.id,
+          user_id: user.id,
+          expires_at: expiresAt.toISOString(),
+          status: 'active',
+        })
+      }
+    }
+
+    // Enviar email de boas vindas
     await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
@@ -94,23 +105,12 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify({
         from: 'noreply@tallentacad.com',
         to: email,
-        subject: 'Bem-vindo ao TallentAcad — Trial iniciado',
-        html: `
-          <h2>Bem-vindo ao TallentAcad, ${nome}!</h2>
-          <p>O seu trial gratuito de 15 dias foi iniciado com sucesso.</p>
-          <p>Tem acesso a:</p>
-          <ul>
-            <li>5 cursos</li>
-            <li>100 formandos</li>
-          </ul>
-          <p>O seu espaco na plataforma: <a href="https://tallentacad.com/${slug}">tallentacad.com/${slug}</a></p>
-          <p>Painel de gestao: <a href="https://tallentacad.com/admin">tallentacad.com/admin</a></p>
-          <p>O trial termina em ${trialEndsAt.toLocaleDateString('pt-PT')}.</p>
-        `,
+        subject: 'Bem-vindo ao TallentAcad',
+        html: `<h2>Bem-vindo, ${nome}!</h2><p>A sua conta foi criada com sucesso.</p><p><a href="${process.env.NEXT_PUBLIC_APP_URL}/area">Aceder aos seus cursos</a></p>`,
       }),
-    }).catch(() => {}) // nao bloquear se email falhar
+    }).catch(() => {})
 
-    return NextResponse.json({ tenant }, { status: 201 })
+    return NextResponse.json({ success: true })
   } catch (err) {
     console.error(err)
     return NextResponse.json({ error: 'Erro interno' }, { status: 500 })

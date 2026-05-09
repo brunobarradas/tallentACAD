@@ -2,12 +2,5 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --blue: #1e3a5f;
-  --blue-mid: #4a90d9;
-  --orange: #f5a623;
-}
-
-body {
-  font-family: Georgia, serif;
-}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: Georgia, serif; }
