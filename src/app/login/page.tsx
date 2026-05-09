@@ -20,7 +20,7 @@ function LoginForm() {
     setError('')
 
     const supabase = createClient()
-    const { data, error: authError } = await supabase.auth.signInWithPassword({ email, password })
+    const { error: authError } = await supabase.auth.signInWithPassword({ email, password })
 
     if (authError) {
       setError('Email ou password incorretos.')
@@ -28,14 +28,11 @@ function LoginForm() {
       return
     }
 
-    // Verificar se e admin
-    const { data: user } = await supabase
-      .from('users')
-      .select('role')
-      .eq('auth_user_id', data.user.id)
-      .single()
+    // Verificar papel via API (evita problemas de RLS)
+    const res = await fetch('/api/auth/me')
+    const data = await res.json()
 
-    if (user?.role === 'admin') {
+    if (data.role === 'admin') {
       router.push('/admin')
     } else {
       router.push(redirect)

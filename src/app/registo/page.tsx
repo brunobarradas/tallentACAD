@@ -1,8 +1,8 @@
 'use client'
-import { useState } from 'react'
+import { useState, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
-import { Suspense } from 'react'
+import { createClient } from '@/lib/supabase-client'
 
 function RegistoForm() {
   const router = useRouter()
@@ -33,6 +33,7 @@ function RegistoForm() {
       return
     }
 
+    // Criar conta
     const res = await fetch('/api/auth/registo', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -47,11 +48,27 @@ function RegistoForm() {
       return
     }
 
+    // Se curso pago redirecionar para pagamento
     if (data.payment_url) {
       window.location.href = data.payment_url
-    } else {
-      router.push('/area')
+      return
     }
+
+    // Fazer login automatico apos registo
+    const supabase = createClient()
+    const { error: loginError } = await supabase.auth.signInWithPassword({
+      email: form.email,
+      password: form.password,
+    })
+
+    if (loginError) {
+      // Se login falhar redirecionar para login manual
+      router.push('/login')
+      return
+    }
+
+    // Redirecionar para area pessoal
+    router.push('/area')
   }
 
   return (
