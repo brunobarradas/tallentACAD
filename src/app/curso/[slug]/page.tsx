@@ -1,6 +1,7 @@
-import { createServerSupabaseClient } from '@/lib/supabase'
+import { createServerSupabaseClient, createAdminClient } from '@/lib/supabase'
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
+import BotaoInscricao from './botao-inscricao'
 
 type Props = { params: Promise<{ slug: string }> }
 
@@ -24,37 +25,51 @@ export default async function CoursePage({ params }: Props) {
     .eq('status', 'published')
     .order('order_index', { ascending: true })
 
+  // Verificar se utilizador esta autenticado e inscrito
+  const { data: { user } } = await supabase.auth.getUser()
+  let isEnrolled = false
+  let isAuthenticated = !!user
+
+  if (user) {
+    const admin = createAdminClient()
+    const { data: dbUser } = await admin.from('users').select('id').eq('auth_user_id', user.id).single()
+    if (dbUser) {
+      const { data: enrollment } = await admin.from('enrollments').select('id').eq('course_id', course.id).eq('user_id', dbUser.id).eq('status', 'active').single()
+      isEnrolled = !!enrollment
+    }
+  }
+
   const typeLabel: Record<string, string> = { free: 'Gratuito', paid: 'Pago', sold: 'Disponivel' }
   const typeColor: Record<string, string> = { free: '#dcfce7', paid: '#dbeafe', sold: '#fef3c7' }
   const typeText: Record<string, string> = { free: '#16a34a', paid: '#1d4ed8', sold: '#d97706' }
 
   return (
     <main style={{ minHeight: '100vh', background: '#f0f4f8', fontFamily: 'Georgia, serif' }}>
-
-      {/* Header */}
       <header style={{ background: '#1e3a5f', padding: '0 40px' }}>
         <div style={{ maxWidth: 900, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 64 }}>
           <Link href="/" style={{ fontSize: 22, fontWeight: 700, color: '#fff', textDecoration: 'none' }}>
             tallent<span style={{ color: '#f5a623' }}>acad</span>
           </Link>
           <div style={{ display: 'flex', gap: 16 }}>
-            <Link href="/login" style={{ color: 'rgba(255,255,255,0.7)', textDecoration: 'none', fontSize: 13 }}>Entrar</Link>
-            <Link href="/registo" style={{ background: '#f5a623', color: '#fff', padding: '8px 18px', borderRadius: 8, textDecoration: 'none', fontSize: 13, fontWeight: 600 }}>Registar</Link>
+            {isAuthenticated ? (
+              <Link href="/area" style={{ color: 'rgba(255,255,255,0.7)', textDecoration: 'none', fontSize: 13 }}>A minha area</Link>
+            ) : (
+              <>
+                <Link href="/login" style={{ color: 'rgba(255,255,255,0.7)', textDecoration: 'none', fontSize: 13 }}>Entrar</Link>
+                <Link href="/registo" style={{ background: '#f5a623', color: '#fff', padding: '8px 18px', borderRadius: 8, textDecoration: 'none', fontSize: 13, fontWeight: 600 }}>Registar</Link>
+              </>
+            )}
           </div>
         </div>
       </header>
 
-      <div style={{ maxWidth: 900, margin: '0 auto', padding: '40px 40px' }}>
-
-        {/* Breadcrumb */}
+      <div style={{ maxWidth: 900, margin: '0 auto', padding: '40px' }}>
         <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 24 }}>
           <Link href="/" style={{ color: '#4a90d9', textDecoration: 'none' }}>Catalogo</Link>
           {' / '}{course.title}
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 32 }}>
-
-          {/* Coluna principal */}
           <div>
             {course.thumbnail_url && (
               <img src={course.thumbnail_url} alt={course.title} style={{ width: '100%', borderRadius: 14, marginBottom: 28, maxHeight: 300, objectFit: 'cover' }} />
@@ -94,7 +109,7 @@ export default async function CoursePage({ params }: Props) {
             </div>
           </div>
 
-          {/* Coluna lateral — CTA */}
+          {/* CTA lateral */}
           <div>
             <div style={{ background: '#fff', borderRadius: 14, border: '1px solid #e8edf3', padding: 24, position: 'sticky', top: 24 }}>
               {course.type === 'paid' && (
@@ -110,17 +125,13 @@ export default async function CoursePage({ params }: Props) {
                 <div>📚 {lessons?.length || 0} licoes</div>
               </div>
 
-              <Link
-                href={`/registo?curso=${course.slug}`}
-                style={{ display: 'block', width: '100%', padding: '14px', background: '#f5a623', color: '#fff', borderRadius: 10, textDecoration: 'none', fontSize: 15, fontWeight: 700, textAlign: 'center', boxSizing: 'border-box' }}
-              >
-                {course.type === 'paid' ? `Comprar — ${course.price}€` : 'Inscrever-me'}
-              </Link>
-
-              <div style={{ textAlign: 'center', marginTop: 12, fontSize: 11, color: '#9ca3af' }}>
-                Ja tem conta?{' '}
-                <Link href={`/login?redirect=/curso/${course.slug}`} style={{ color: '#4a90d9' }}>Entrar</Link>
-              </div>
+              <BotaoInscricao
+                courseSlug={slug}
+                courseType={course.type}
+                coursePrice={course.price}
+                isAuthenticated={isAuthenticated}
+                isEnrolled={isEnrolled}
+              />
             </div>
           </div>
         </div>
