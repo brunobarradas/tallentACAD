@@ -1,4 +1,4 @@
-import { createServerSupabaseClient } from '@/lib/supabase'
+import { createServerSupabaseClient, createAdminClient } from '@/lib/supabase'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 
@@ -8,7 +8,9 @@ export default async function AreaPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  const { data: dbUser } = await supabase
+  const admin = createAdminClient()
+
+  const { data: dbUser } = await admin
     .from('users')
     .select('id, name, email')
     .eq('auth_user_id', user.id)
@@ -16,7 +18,7 @@ export default async function AreaPage() {
 
   if (!dbUser) redirect('/login')
 
-  const { data: enrollments } = await supabase
+  const { data: enrollments } = await admin
     .from('enrollments')
     .select(`
       id, enrolled_at, expires_at, status,
@@ -25,6 +27,29 @@ export default async function AreaPage() {
     .eq('user_id', dbUser.id)
     .eq('status', 'active')
     .order('enrolled_at', { ascending: false })
+
+  // Buscar progresso de cada inscricao
+  const { data: allAccess } = await admin
+    .from('lesson_access')
+    .select('enrollment_id, is_completed')
+
+  // Buscar total de licoes por curso
+  const courseIds = (enrollments || []).map((e: any) => e.courses?.id).filter(Boolean)
+  const { data: allLessons } = courseIds.length > 0 ? await admin
+    .from('lessons')
+    .select('id, course_id')
+    .in('course_id', courseIds)
+    .eq('status', 'published') : { data: [] }
+
+  const lessonsByCourse = (allLessons || []).reduce((acc: Record<string, number>, l: any) => {
+    acc[l.course_id] = (acc[l.course_id] || 0) + 1
+    return acc
+  }, {})
+
+  const completedByEnrollment = (allAccess || []).reduce((acc: Record<string, number>, la: any) => {
+    if (la.is_completed) acc[la.enrollment_id] = (acc[la.enrollment_id] || 0) + 1
+    return acc
+  }, {})
 
   return (
     <main style={{ minHeight: '100vh', background: '#f0f4f8', fontFamily: 'Georgia, serif' }}>
@@ -38,7 +63,7 @@ export default async function AreaPage() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <span style={{ color: 'rgba(255,255,255,0.7)', fontSize: 13 }}>Ola, {dbUser.name}</span>
             <form action="/api/auth/logout" method="POST">
-              <button type="submit" style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.3)', color: 'rgba(255,255,255,0.7)', padding: '6px 14px', borderRadius: 6, fontSize: 12, cursor: 'pointer' }}>
+              <button type="submit" style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.3)', color: 'rgba(255,255,255,0.7)', padding: '6px 14px', borderRadius: 6, fontSize: 12, cursor: 'pointer', fontFamily: 'Georgia, serif' }}>
                 Sair
               </button>
             </form>
@@ -55,25 +80,45 @@ export default async function AreaPage() {
             {enrollments.map((enrollment: any) => {
               const course = enrollment.courses
               const daysLeft = Math.ceil((new Date(enrollment.expires_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+              const totalLessons = lessonsByCourse[course?.id] || 0
+              const completedLessons = completedByEnrollment[enrollment.id] || 0
+              const progress = totalLessons > 0 ? Math.round((completedLessons / totalLessons) * 100) : 0
+
               return (
-                <Link key={enrollment.id} href={`/area/curso/${course.slug}`} style={{ textDecoration: 'none' }}>
-                  <div style={{ background: '#fff', borderRadius: 14, border: '1px solid #e8edf3', overflow: 'hidden', cursor: 'pointer' }}>
-                    {course.thumbnail_url ? (
-                      <img src={course.thumbnail_url} alt={course.title} style={{ width: '100%', height: 150, objectFit: 'cover' }} />
-                    ) : (
-                      <div style={{ width: '100%', height: 150, background: 'linear-gradient(135deg, #1e3a5f, #4a90d9)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 40 }}>📚</div>
+                <div key={enrollment.id} style={{ background: '#fff', borderRadius: 14, border: '1px solid #e8edf3', overflow: 'hidden' }}>
+                  {course?.thumbnail_url ? (
+                    <img src={course.thumbnail_url} alt={course.title} style={{ width: '100%', height: 150, objectFit: 'cover' }} />
+                  ) : (
+                    <div style={{ width: '100%', height: 150, background: 'linear-gradient(135deg, #1e3a5f, #4a90d9)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 40 }}>📚</div>
+                  )}
+                  <div style={{ padding: 20 }}>
+                    <h3 style={{ fontSize: 15, fontWeight: 700, color: '#1e3a5f', marginBottom: 10 }}>{course?.title}</h3>
+
+                    {/* Barra de progresso */}
+                    {totalLessons > 0 && (
+                      <div style={{ marginBottom: 10 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
+                          <span>{completedLessons}/{totalLessons} licoes</span>
+                          <span>{progress}%</span>
+                        </div>
+                        <div style={{ background: '#f0f4f8', borderRadius: 99, height: 6, overflow: 'hidden' }}>
+                          <div style={{ background: '#f5a623', height: '100%', width: `${progress}%`, borderRadius: 99 }} />
+                        </div>
+                      </div>
                     )}
-                    <div style={{ padding: 18 }}>
-                      <h3 style={{ fontSize: 15, fontWeight: 700, color: '#1e3a5f', marginBottom: 8 }}>{course.title}</h3>
-                      <div style={{ fontSize: 11, color: daysLeft < 7 ? '#dc2626' : '#6b7280' }}>
-                        {daysLeft > 0 ? `${daysLeft} dias restantes` : 'Acesso expirado'}
-                      </div>
-                      <div style={{ marginTop: 12, padding: '8px 14px', background: '#1e3a5f', color: '#fff', borderRadius: 8, textAlign: 'center', fontSize: 12, fontWeight: 600 }}>
-                        Continuar curso
-                      </div>
+
+                    <div style={{ fontSize: 11, color: daysLeft < 7 ? '#dc2626' : '#6b7280', marginBottom: 14 }}>
+                      {daysLeft > 0 ? `${daysLeft} dias restantes` : 'Acesso expirado'}
                     </div>
+
+                    <Link
+                      href={`/area/curso/${course?.slug}`}
+                      style={{ display: 'block', padding: '10px 14px', background: '#1e3a5f', color: '#fff', borderRadius: 8, textAlign: 'center', fontSize: 13, fontWeight: 600, textDecoration: 'none' }}
+                    >
+                      {progress === 100 ? 'Rever curso' : progress > 0 ? 'Continuar curso' : 'Comecar curso'}
+                    </Link>
                   </div>
-                </Link>
+                </div>
               )
             })}
           </div>

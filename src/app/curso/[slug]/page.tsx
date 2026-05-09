@@ -1,140 +1,178 @@
 import { createServerSupabaseClient, createAdminClient } from '@/lib/supabase'
-import { notFound } from 'next/navigation'
+import { notFound, redirect } from 'next/navigation'
 import Link from 'next/link'
-import BotaoInscricao from './botao-inscricao'
+import LicaoViewer from './licao-viewer'
 
 type Props = { params: Promise<{ slug: string }> }
 
-export default async function CoursePage({ params }: Props) {
+export default async function AreaCursoPage({ params }: Props) {
   const { slug } = await params
   const supabase = await createServerSupabaseClient()
 
-  const { data: course } = await supabase
+  // Verificar autenticacao
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) redirect('/login')
+
+  const admin = createAdminClient()
+
+  // Buscar utilizador
+  const { data: dbUser } = await admin
+    .from('users')
+    .select('id, name')
+    .eq('auth_user_id', user.id)
+    .single()
+
+  if (!dbUser) redirect('/login')
+
+  // Buscar curso
+  const { data: course } = await admin
     .from('courses')
     .select('*')
     .eq('slug', slug)
-    .eq('status', 'published')
     .single()
 
   if (!course) notFound()
 
-  const { data: lessons } = await supabase
+  // Verificar inscricao ativa
+  const { data: enrollment } = await admin
+    .from('enrollments')
+    .select('id, enrolled_at, expires_at, status')
+    .eq('course_id', course.id)
+    .eq('user_id', dbUser.id)
+    .eq('status', 'active')
+    .single()
+
+  if (!enrollment) redirect(`/curso/${slug}`)
+
+  // Verificar se acesso expirou
+  const isExpired = new Date(enrollment.expires_at) < new Date()
+  if (isExpired) redirect(`/curso/${slug}`)
+
+  // Buscar licoes publicadas
+  const { data: lessons } = await admin
     .from('lessons')
-    .select('id, title, order_index, unlock_after_days')
+    .select('id, title, order_index, unlock_after_days, status')
     .eq('course_id', course.id)
     .eq('status', 'published')
     .order('order_index', { ascending: true })
 
-  // Verificar se utilizador esta autenticado e inscrito
-  const { data: { user } } = await supabase.auth.getUser()
-  let isEnrolled = false
-  let isAuthenticated = !!user
+  // Calcular dias desde inicio do curso
+  const enrolledAt = new Date(enrollment.enrolled_at)
+  const daysSinceEnroll = Math.floor((Date.now() - enrolledAt.getTime()) / (1000 * 60 * 60 * 24))
 
-  if (user) {
-    const admin = createAdminClient()
-    const { data: dbUser } = await admin.from('users').select('id').eq('auth_user_id', user.id).single()
-    if (dbUser) {
-      const { data: enrollment } = await admin.from('enrollments').select('id').eq('course_id', course.id).eq('user_id', dbUser.id).eq('status', 'active').single()
-      isEnrolled = !!enrollment
-    }
-  }
+  // Buscar progresso do formando
+  const { data: lessonAccess } = await admin
+    .from('lesson_access')
+    .select('lesson_id, is_completed, completed_at')
+    .eq('enrollment_id', enrollment.id)
 
-  const typeLabel: Record<string, string> = { free: 'Gratuito', paid: 'Pago', sold: 'Disponivel' }
-  const typeColor: Record<string, string> = { free: '#dcfce7', paid: '#dbeafe', sold: '#fef3c7' }
-  const typeText: Record<string, string> = { free: '#16a34a', paid: '#1d4ed8', sold: '#d97706' }
+  const accessMap = (lessonAccess || []).reduce((acc: Record<string, any>, la: any) => {
+    acc[la.lesson_id] = la
+    return acc
+  }, {})
+
+  const daysLeft = Math.ceil((new Date(enrollment.expires_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+  const completedCount = (lessonAccess || []).filter((la: any) => la.is_completed).length
+  const totalLessons = lessons?.length || 0
+  const progress = totalLessons > 0 ? Math.round((completedCount / totalLessons) * 100) : 0
 
   return (
     <main style={{ minHeight: '100vh', background: '#f0f4f8', fontFamily: 'Georgia, serif' }}>
+
+      {/* Header */}
       <header style={{ background: '#1e3a5f', padding: '0 40px' }}>
-        <div style={{ maxWidth: 900, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 64 }}>
-          <Link href="/" style={{ fontSize: 22, fontWeight: 700, color: '#fff', textDecoration: 'none' }}>
+        <div style={{ maxWidth: 1100, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 64 }}>
+          <Link href="/area" style={{ fontSize: 22, fontWeight: 700, color: '#fff', textDecoration: 'none' }}>
             tallent<span style={{ color: '#f5a623' }}>acad</span>
           </Link>
-          <div style={{ display: 'flex', gap: 16 }}>
-            {isAuthenticated ? (
-              <Link href="/area" style={{ color: 'rgba(255,255,255,0.7)', textDecoration: 'none', fontSize: 13 }}>A minha area</Link>
-            ) : (
-              <>
-                <Link href="/login" style={{ color: 'rgba(255,255,255,0.7)', textDecoration: 'none', fontSize: 13 }}>Entrar</Link>
-                <Link href="/registo" style={{ background: '#f5a623', color: '#fff', padding: '8px 18px', borderRadius: 8, textDecoration: 'none', fontSize: 13, fontWeight: 600 }}>Registar</Link>
-              </>
-            )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <span style={{ color: 'rgba(255,255,255,0.7)', fontSize: 13 }}>Ola, {dbUser.name}</span>
+            <Link href="/area" style={{ color: 'rgba(255,255,255,0.5)', fontSize: 12, textDecoration: 'none' }}>← Os meus cursos</Link>
           </div>
         </div>
       </header>
 
-      <div style={{ maxWidth: 900, margin: '0 auto', padding: '40px' }}>
-        <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 24 }}>
-          <Link href="/" style={{ color: '#4a90d9', textDecoration: 'none' }}>Catalogo</Link>
-          {' / '}{course.title}
-        </div>
+      <div style={{ maxWidth: 1100, margin: '0 auto', padding: '32px 40px', display: 'grid', gridTemplateColumns: '300px 1fr', gap: 28 }}>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 32 }}>
-          <div>
-            {course.thumbnail_url && (
-              <img src={course.thumbnail_url} alt={course.title} style={{ width: '100%', borderRadius: 14, marginBottom: 28, maxHeight: 300, objectFit: 'cover' }} />
-            )}
+        {/* Sidebar — lista de licoes */}
+        <div>
+          {/* Info do curso */}
+          <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #e8edf3', padding: 20, marginBottom: 16 }}>
+            <h1 style={{ fontSize: 16, fontWeight: 700, color: '#1e3a5f', marginBottom: 12 }}>{course.title}</h1>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-              <span style={{ padding: '4px 12px', borderRadius: 20, fontSize: 11, fontWeight: 600, background: typeColor[course.type], color: typeText[course.type] }}>
-                {typeLabel[course.type]}
-              </span>
+            {/* Progresso */}
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#6b7280', marginBottom: 6 }}>
+                <span>Progresso</span>
+                <span>{completedCount}/{totalLessons} licoes</span>
+              </div>
+              <div style={{ background: '#f0f4f8', borderRadius: 99, height: 8, overflow: 'hidden' }}>
+                <div style={{ background: '#f5a623', height: '100%', width: `${progress}%`, borderRadius: 99, transition: 'width 0.3s' }} />
+              </div>
+              <div style={{ fontSize: 11, color: '#f5a623', fontWeight: 600, marginTop: 4 }}>{progress}% concluido</div>
             </div>
 
-            <h1 style={{ fontSize: 32, fontWeight: 700, color: '#1e3a5f', marginBottom: 16 }}>{course.title}</h1>
+            <div style={{ fontSize: 11, color: daysLeft < 7 ? '#dc2626' : '#6b7280' }}>
+              ⏱ {daysLeft} dias restantes
+            </div>
+          </div>
 
-            {course.description && (
-              <p style={{ fontSize: 15, color: '#374151', lineHeight: 1.7, marginBottom: 28 }}>{course.description}</p>
-            )}
-
-            {/* Licoes */}
-            <div style={{ background: '#fff', borderRadius: 14, border: '1px solid #e8edf3', overflow: 'hidden' }}>
-              <div style={{ padding: '16px 20px', borderBottom: '1px solid #e8edf3', fontSize: 14, fontWeight: 700, color: '#1e3a5f' }}>
-                Conteudo do curso ({lessons?.length || 0} licoes)
-              </div>
-              {lessons && lessons.map((lesson: any, i: number) => (
-                <div key={lesson.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 20px', borderBottom: '1px solid #f9fafb' }}>
-                  <div style={{ width: 28, height: 28, borderRadius: '50%', background: '#e8edf3', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: '#1e3a5f', flexShrink: 0 }}>
-                    {i + 1}
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>{lesson.title}</div>
-                    {lesson.unlock_after_days > 0 && (
-                      <div style={{ fontSize: 11, color: '#9ca3af' }}>Disponivel no dia {lesson.unlock_after_days}</div>
-                    )}
-                  </div>
-                  <span style={{ fontSize: 12, color: '#9ca3af' }}>🔒</span>
+          {/* Lista de licoes */}
+          <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #e8edf3', overflow: 'hidden' }}>
+            <div style={{ padding: '12px 16px', borderBottom: '1px solid #e8edf3', fontSize: 11, fontWeight: 700, color: '#1e3a5f', textTransform: 'uppercase', letterSpacing: 1 }}>
+              Licoes
+            </div>
+            {lessons && lessons.map((lesson: any, i: number) => {
+              const isUnlocked = daysSinceEnroll >= lesson.unlock_after_days
+              const isCompleted = accessMap[lesson.id]?.is_completed
+              return (
+                <div key={lesson.id} style={{ borderBottom: '1px solid #f9fafb' }}>
+                  {isUnlocked ? (
+                    <Link
+                      href={`/area/curso/${slug}?licao=${lesson.id}`}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px',
+                        textDecoration: 'none',
+                        background: 'transparent',
+                      }}
+                    >
+                      <div style={{
+                        width: 26, height: 26, borderRadius: '50%', flexShrink: 0,
+                        background: isCompleted ? '#f5a623' : '#e8edf3',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: 11, fontWeight: 700,
+                        color: isCompleted ? '#fff' : '#1e3a5f',
+                      }}>
+                        {isCompleted ? '✓' : i + 1}
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: '#1e3a5f' }}>{lesson.title}</div>
+                      </div>
+                    </Link>
+                  ) : (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', opacity: 0.5 }}>
+                      <div style={{ width: 26, height: 26, borderRadius: '50%', background: '#e8edf3', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, flexShrink: 0 }}>
+                        🔒
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: '#1e3a5f' }}>{lesson.title}</div>
+                        <div style={{ fontSize: 10, color: '#9ca3af' }}>Dia {lesson.unlock_after_days}</div>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              ))}
-            </div>
-          </div>
-
-          {/* CTA lateral */}
-          <div>
-            <div style={{ background: '#fff', borderRadius: 14, border: '1px solid #e8edf3', padding: 24, position: 'sticky', top: 24 }}>
-              {course.type === 'paid' && (
-                <div style={{ fontSize: 36, fontWeight: 700, color: '#1e3a5f', marginBottom: 8 }}>{course.price}€</div>
-              )}
-              {course.type === 'free' && (
-                <div style={{ fontSize: 24, fontWeight: 700, color: '#16a34a', marginBottom: 8 }}>Gratuito</div>
-              )}
-
-              <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 20 }}>
-                <div style={{ marginBottom: 6 }}>📅 Inicio: {new Date(course.starts_at).toLocaleDateString('pt-PT')}</div>
-                <div style={{ marginBottom: 6 }}>⏱ Acesso: {course.access_days} dias</div>
-                <div>📚 {lessons?.length || 0} licoes</div>
-              </div>
-
-              <BotaoInscricao
-                courseSlug={slug}
-                courseType={course.type}
-                coursePrice={course.price}
-                isAuthenticated={isAuthenticated}
-                isEnrolled={isEnrolled}
-              />
-            </div>
+              )
+            })}
           </div>
         </div>
+
+        {/* Conteudo da licao */}
+        <LicaoViewer
+          lessons={lessons || []}
+          enrollmentId={enrollment.id}
+          daysSinceEnroll={daysSinceEnroll}
+          accessMap={accessMap}
+        />
       </div>
     </main>
   )
